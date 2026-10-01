@@ -1407,7 +1407,8 @@ def _checkin_trae_token(token: str, region: str, user_id: str, name: str) -> boo
         max_attempts=max(1, int(os.environ.get("CHECKIN_TRAE_MAX_RETRY", "4"))),
     )
     if _trae_api_ok(body):
-        log("  签到成功!(本次运行完成了签到)")
+        log("  签到成功!(本次运行完成了签到) 响应: "
+            + json.dumps(body, ensure_ascii=False)[:150])
         query_trae_credits(token)
         return True
     if isinstance(body, dict):

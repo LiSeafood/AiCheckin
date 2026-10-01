@@ -1,4 +1,4 @@
-# AiCheckin · 爱签到
+# ai-ide-checkin
 
 **WorkBuddy / Trae CN / Qoder 每日自动签到** —— 单文件、零第三方依赖、多账号、自动续期。
 
@@ -9,11 +9,12 @@
 
 | 平台 | 接口 | 每日收益 |
 |---|---|---|
-| WorkBuddy(腾讯 CodeBuddy) | `POST /v2/billing/meter/daily-checkin` | 100 积分 |
-| Trae CN | `POST /trae/api/v2/ug/checkin_credits/claim` | 20 积分(+连续奖励) |
+| WorkBuddy(腾讯 CodeBuddy) | `POST /v2/billing/meter/daily-checkin` | 100 积分 + 连续签到 |
+| Trae CN | `POST /trae/api/v2/ug/checkin_credits/claim` | 150 积分 * |
 | Qoder(国内/国际) | `POST /sash/api/v1/me/campaigns/{cid}/claim` | 100 Credits |
 
-> "Ai" 既指 AI 智能体客户端,也是"爱" —— 爱签到,天天领。
+> \* Trae 的接口回报随账号状态浮动(实测 `credits` 字段 100~150,另有
+> `extra_credits` 加成字段),以客户端展示为准。
 
 ## 特性
 
@@ -40,8 +41,8 @@
 前提:Windows + Python 3.9+,且本机装有对应客户端并已登录。
 
 ```bash
-git clone https://github.com/LiSeafood/AiCheckin.git
-cd AiCheckin
+git clone https://github.com/LiSeafood/ai-ide-checkin.git
+cd ai-ide-checkin
 
 # 1. (仅 WorkBuddy 需要)提取本地凭据解密密钥 —— 需要 Node.js >= 22
 node extract_wbkey.mjs        # 自动定位客户端、提取密钥、写入 config.json
