@@ -1,0 +1,11 @@
+{
+  "_comment": "可选配置。正常情况下本地运行零配置(凭据自动从客户端截留);此文件用于 WorkBuddy 密钥与手动兜底。真实配置不要提交到仓库。",
+
+  "_wb_at_rest_key": "WorkBuddy 本地凭据的解密密钥,由 `node extract_wbkey.mjs` 自动提取写入(也可用环境变量 WORKBUDDY_AT_REST_KEY 提供)。缺失时无法解开 WorkBuddy 的加密登录态。",
+  "wb_at_rest_key": "",
+
+  "_access_token": "可选。WorkBuddy 明文 accessToken 手动兜底(云端/无客户端机器用);本地模式一般不需要。运行 python checkin.py --export 可导出。",
+  "access_token": "",
+  "uid": "",
+  "domain": "www.codebuddy.cn"
+}

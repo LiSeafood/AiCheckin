@@ -1,0 +1,21 @@
+# 本地/敏感配置 —— 不要提交
+config.json
+accounts.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 日志与临时产物
+*.log
+logs/
+checkin-log.txt
+token.txt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
