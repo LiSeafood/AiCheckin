@@ -50,8 +50,9 @@ node extract_wbkey.mjs        # 自动定位客户端、提取密钥、写入 co
 # 2. 先手动跑一次验证
 python checkin.py
 
-# 3. 注册每天 10:00 的 Windows 计划任务(免管理员)
-install_task.bat
+# 3. 注册 Windows 计划任务(免管理员;默认每天 10:00)
+install_task.bat              # 交互式询问运行时间
+install_task.bat 09:30        # 或直接指定时间
 ```
 
 运行后脚本会自动扫描本机客户端登录态并逐账号签到:
