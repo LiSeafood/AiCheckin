@@ -20,7 +20,11 @@ set "WORKDIR=%~dp0"
 set "LOGDIR=%WORKDIR%logs"
 set "LOGFILE=%LOGDIR%\checkin.log"
 set "TASKNAME=WorkBuddy-DailyCheckin"
-set "RUNTIME=10:00"
+
+rem --- 运行时间: 可用参数指定(install_task.bat 09:30),否则交互询问,默认 10:00
+set "RUNTIME=%~1"
+if not defined RUNTIME set /p "RUNTIME=每天几点运行?(HH:MM,直接回车 = 10:00): "
+if not defined RUNTIME set "RUNTIME=10:00"
 
 echo ============================================================
 echo   WorkBuddy 每日自动签到 - 任务注册

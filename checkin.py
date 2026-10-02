@@ -56,6 +56,7 @@ import json
 import os
 import platform
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -108,6 +109,37 @@ _DEFAULT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", 
 _env_log = os.environ.get("CHECKIN_LOG_FILE")
 LOG_FILE: str | None = _DEFAULT_LOG if _env_log is None else (_env_log or None)
 LOG_MAX_BYTES = int(os.environ.get("CHECKIN_LOG_MAX_BYTES", str(512 * 1024)))
+LOG_RETENTION_DAYS = int(os.environ.get("CHECKIN_LOG_RETENTION_DAYS", "30"))
+
+
+def _trim_log() -> None:
+    """日志只保留最近 N 天(默认 30),每次启动时清理一次(含轮转备份)。"""
+    if not LOG_FILE:
+        return
+    try:
+        files = [LOG_FILE]
+        if os.path.isfile(LOG_FILE + ".1"):
+            files.append(LOG_FILE + ".1")
+        cutoff = time.strftime("%Y-%m-%d",
+                               time.localtime(time.time() - LOG_RETENTION_DAYS * 86400))
+        kept = []
+        total = 0
+        for f in files:
+            for line in open(f, encoding="utf-8", errors="ignore"):
+                total += 1
+                m = re.match(r"\[(\d{4}-\d\d-\d\d) ", line)
+                if m and m.group(1) >= cutoff:
+                    kept.append(line)
+        if len(kept) >= total:
+            return
+        tmp = LOG_FILE + ".trim"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(kept)
+        os.replace(tmp, LOG_FILE)
+        if os.path.isfile(LOG_FILE + ".1"):
+            os.remove(LOG_FILE + ".1")
+    except Exception:
+        pass
 
 
 def _rotate_log(path: str) -> None:
@@ -806,6 +838,47 @@ def trae_write_back_auth(store_path: str, auth: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(store, fh, ensure_ascii=False)
     os.replace(tmp, store_path)
+
+
+# --------------------------------------------------------------------------
+# Windows 系统通知( toast;CHECKIN_NOTIFY=0 可关闭 )
+#
+# 用 PowerShell 调 Windows Runtime 的 ToastNotificationManager 发系统通知,
+# 无需任何第三方模块。仅 Windows 弹出;其它平台/发送失败一律静默。
+# --------------------------------------------------------------------------
+
+_TOAST_PS = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastText02"><text id="1">{TITLE}</text><text id="2">{BODY}</text></binding></visual></toast>')
+$toast = New-Object Windows.UI.Notifications.ToastNotification $xml
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
+"""
+
+
+def _xml_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;").replace("'", "&apos;"))
+
+
+def notify(title: str, lines: list[str]) -> None:
+    """发一条 Windows 系统通知(签到完成/失败提醒)。失败静默,不影响签到。"""
+    if os.environ.get("CHECKIN_NOTIFY", "1").strip() in ("0", "false", "off"):
+        return
+    if sys.platform != "win32":
+        return
+    try:
+        ps = (_QODER_TOAST_PS
+              .replace("{TITLE}", _xml_escape(title))
+              .replace("{BODY}", _xml_escape("\n".join(lines))))
+        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                          "-Command", ps],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 def _trae_client_running() -> bool:
@@ -1858,6 +1931,16 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
 
     campaigns = body.get("campaigns") or []
     benefits = [c for c in campaigns if isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"]
+    # 每日活动对象可能延迟下发(实测整点后数分钟才出现),空列表时短暂重试
+    for attempt in range(3):
+        if benefits:
+            break
+        wait = 60
+        log(f"  活动列表暂无签到类活动(可能未下发),{wait}s 后重查({attempt + 1}/3)...")
+        time.sleep(wait)
+        status, body, raw = _qoder_req(base, "/sash/api/v1/me/campaigns", headers)
+        campaigns = (body or {}).get("campaigns") or [] if isinstance(body, dict) else []
+        benefits = [c for c in campaigns if isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"]
     claimable = [c for c in benefits if c.get("claimStatus") == "CLAIMABLE"]
     if not claimable:
         claimed_now = [c for c in benefits if c.get("claimStatus") == "CLAIMED"]
@@ -1865,7 +1948,7 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
             log(f"  今日已签到(本次运行前已领过,未重复领取),活动 {len(claimed_now)} 个")
         else:
             log(f"  今日没有可领的签到活动(列表 {len(campaigns)} 项均为非签到类)——"
-                f"新账号的每日活动可能尚未下发,明天 10:00 后自动重试")
+                f"可能是活动尚未下发,可稍后手动重跑 python checkin.py 再试")
         return True
 
     got, fail = 0.0, 0
@@ -1917,6 +2000,7 @@ def checkin_qoder() -> bool:
 # --------------------------------------------------------------------------
 
 def main(with_trae: bool = True, with_qoder: bool = True) -> int:
+    _trim_log()
     log("=" * 50)
     log("每日自动签到开始 (WorkBuddy + Trae + Qoder)")
     log("=" * 50)
@@ -1941,6 +2025,11 @@ def main(with_trae: bool = True, with_qoder: bool = True) -> int:
     for name, ok in results:
         log(f"  {name}: {'成功' if ok else '未完成'}")
     log("=" * 50)
+
+    # Windows 系统通知:签到完成/失败提醒
+    ok_n = sum(1 for _, ok in results if ok)
+    title = f"AiCheckin 签到{'完成' if ok_n == len(results) else '有失败'}"
+    notify(title, [f"{name} {'✅' if ok else '❌ 请查看日志'}" for name, ok in results])
 
     # 全部成功 -> 0;有失败 -> 1,方便 CI 中观察
     return 0 if all(ok for _, ok in results) else 1
