@@ -11,7 +11,7 @@
 |---|---|---|
 | WorkBuddy(腾讯 CodeBuddy) | `POST /v2/billing/meter/daily-checkin` | 100 积分 + 连续签到 |
 | Trae CN | `POST /trae/api/v2/ug/checkin_credits/claim` | 150 积分 * |
-| Qoder(国内/国际) | `POST /sash/api/v1/me/campaigns/{cid}/claim` | 100 Credits |
+| Qoder(国内版) | `POST /sash/api/v1/me/campaigns/{cid}/claim` | 100 Credits |
 
 > \* Trae 的接口回报随账号状态浮动(实测 `credits` 字段 100~150,另有
 > `extra_credits` 加成字段),以客户端展示为准。
@@ -60,7 +60,7 @@ install_task.bat 10:00 22:00  # 指定多个时间(推荐: 早晚各一次,兜�
 
 - WorkBuddy:`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
 - Trae:`%APPDATA%\TRAE SOLO CN\User\globalStorage\storage.json`(及 `Trae CN`)
-- Qoder:`%APPDATA%\com.qodercn.app.*\auth.v1.dat`(及国际版 `com.qoder.app.*`)
+- Qoder:`%APPDATA%\com.qodercn.app.*uth.v1.dat`
 
 输出写入 `logs/checkin.log`,任务后台静默执行。
 
@@ -168,19 +168,6 @@ PowerShell(.NET ProtectedData)子进程** —— 在部分装有安全行为防�
 Python 直接调用 Crypt*Data 会被终止进程(实测)。续期走
 `POST /api/v1/deviceToken/refresh`(无需设备签名),请求头需带 `Cosy-*`
 设备标识(客户端自带 `runtime-info.exe` 生成)。
-
-### 国际版账号的已知限制（2026-10-02 实测）
-
-每日活动对象是**按账号、按天由服务端下发**的：国内账号每天 10:00 整点准时
-下发（脚本可全自动领取）；**国际版账号的下发依赖客户端上下文**——同一时刻
-国内账号已可领取而国际账号列表里始终没有每日活动，且直接对已知的活动 ID
-调领取接口会返回 503 `SAME_PERSON_DEPENDENCY_UNAVAILABLE`（请求头已与客户端
-逐字段一致，差异在更底层）。实测在客户端活动页里手动领取后，该活动对象才
-会出现在接口列表中（状态 CLAIMED）。
-
-**实操建议**：国内账号全自动；国际账号每天在客户端活动页里顺手点一下
-（24 小时窗口内随时可领），或接受偶尔漏签。脚本对国际账号仍会持续监控，
-活动对象出现在接口中时会自动领取。
 
 ## 免责声明
 

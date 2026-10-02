@@ -1547,14 +1547,14 @@ def checkin_trae() -> bool:
 # --------------------------------------------------------------------------
 # Qoder 签到(2026-10 接入,接口逆向自客户端;参考社区 qoder-checkin 项目)
 #
-# 凭据存放(与 TRAE 完全不同): 客户端数据目录 %APPDATA%\com.qoder*.app.*\
+# 凭据存放(与 TRAE 完全不同): 客户端数据目录 %APPDATA%\com.qodercn.app.*\
 #   * auth.v1.dat     = Chromium os_crypt 格式: b"v10" + nonce(12) + AES-256-GCM 密文,
 #                       明文为 JSON {token:"dt-..", refreshToken:"drt-..", expiresAt, user{...}}
 #                       密钥在 Local State 的 os_crypt.encrypted_key(DPAPI 保护,剥 5 字节前缀)
 #   * auth.machine-id = Cosy-MachineId
 # ⚠️ DPAPI 解 key 必须走 PowerShell 子进程(.NET ProtectedData) —— 本机实测
 #    python 直接调 Crypt*Data 会被 WorkBuddy 行为防护终止进程(见 README)。
-# 接口(CN 域 openapi.qoder.com.cn / 国际域 openapi.qoder.sh):
+# 接口(国内版 openapi.qoder.com.cn):
 #   GET  /sash/api/v1/me/campaigns              查活动(Authorization: Bearer dt-..)
 #   POST /sash/api/v1/me/campaigns/{cid}/claim  领取(data.status == "CLAIMED")
 #   POST /api/v1/deviceToken/refresh            续期 {"refresh_token": drt-..}
@@ -1562,25 +1562,15 @@ def checkin_trae() -> bool:
 # 活动每日 10:00 (UTC+8) 刷新,领取后 30 天有效,claim 幂等。
 # --------------------------------------------------------------------------
 
+QODER_BASE = "https://openapi.qoder.com.cn"
 QODER_UMID_REL = os.path.join("resources", "umid", "runtime-info.exe")
 
 
 def _qoder_datadirs() -> list[str]:
-    """客户端数据目录:国际版 com.qoder.app.* / 国内版 com.qodercn.app.*。"""
+    """客户端数据目录:国内版 com.qodercn.app.*。"""
     appdata = os.environ.get("APPDATA", "")
-    out = []
-    for pat in ("com.qoder.app.*", "com.qodercn.app.*"):
-        out += sorted(glob.glob(os.path.join(appdata, pat)),
-                      key=os.path.getmtime, reverse=True)
-    return out
-
-
-def _qoder_variant(datadir: str) -> str:
-    return "cn" if ".qodercn." in os.path.basename(datadir).lower() else "intl"
-
-
-def _qoder_base(variant: str) -> str:
-    return "https://openapi.qoder.com.cn" if variant == "cn" else "https://openapi.qoder.sh"
+    return sorted(glob.glob(os.path.join(appdata, "com.qodercn.app.*")),
+                  key=os.path.getmtime, reverse=True)
 
 
 _QODER_PS_UNPROTECT = r"""
@@ -1790,7 +1780,6 @@ def harvest_qoder_accounts(store: dict) -> None:
         uid = str(user.get("id") or "")
         if not uid:
             continue
-        variant = _qoder_variant(datadir)
         exp = _parse_iso_utc(sess.get("expiresAt"))
         old = (store.setdefault("qoder", {}).get(uid) or {})
         if old.get("token") and _parse_iso_utc(old.get("expires_at")) >= exp:
@@ -1812,8 +1801,6 @@ def harvest_qoder_accounts(store: dict) -> None:
             "refresh_token": rt,
             "expires_at": sess.get("expiresAt") or "",
             "refresh_expires_at": sess.get("refreshTokenExpiresAt") or "",
-            "base": _qoder_base(variant),
-            "variant": variant,
             "datadir": datadir,
             "machine_id": machine_id,
             "device": device,
@@ -1821,7 +1808,7 @@ def harvest_qoder_accounts(store: dict) -> None:
         }
         store["qoder"][uid] = entry
         changed = True
-        log(f"  [账号库] Qoder 账号 {entry['name']}({variant}) 已入库/更新,token 至 {entry['expires_at']}")
+        log(f"  [账号库] Qoder 账号 {entry['name']} 已入库/更新,token 至 {entry['expires_at']}")
     if changed:
         _save_store(store)
 
@@ -1833,7 +1820,7 @@ def _qoder_force_refresh(acc: dict) -> bool:
     if not rt:
         log(f"  [{name}] 无 refreshToken,无法续期")
         return False
-    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
+    base = QODER_BASE
     headers = _qoder_headers(acc)
     headers.pop("Authorization", None)
     status, body, raw = _qoder_req(base, "/api/v1/deviceToken/refresh", headers,
@@ -1919,7 +1906,7 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         if days <= 0:
             log("  跳过:token 已过期且续期未成功")
             return False
-    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
+    base = QODER_BASE
     headers = _qoder_headers(acc)
 
     status, body, raw = with_retry(
