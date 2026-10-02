@@ -21,10 +21,11 @@ set "LOGDIR=%WORKDIR%logs"
 set "LOGFILE=%LOGDIR%\checkin.log"
 set "TASKNAME=WorkBuddy-DailyCheckin"
 
-rem --- 运行时间: 可用参数指定(install_task.bat 09:30),否则交互询问,默认 10:00
-set "RUNTIME=%~1"
-if not defined RUNTIME set /p "RUNTIME=每天几点运行?(HH:MM,直接回车 = 10:00): "
-if not defined RUNTIME set "RUNTIME=10:00"
+rem --- 运行时间: 可用参数指定一个或多个(install_task.bat 09:30 或 install_task.bat 10:00 22:00),
+rem --- 未给参数则交互询问,直接回车默认 10:00
+set "TIMES=%*"
+if not defined TIMES set /p "TIMES=每天几点运行?(HH:MM,多个用空格分隔,直接回车 = 10:00): "
+if not defined TIMES set "TIMES=10:00"
 
 echo ============================================================
 echo   WorkBuddy 每日自动签到 - 任务注册
@@ -34,12 +35,12 @@ echo   Python : %PYTHON%
 echo   脚本   : %SCRIPT%
 echo   日志   : %LOGFILE%
 echo   任务名 : %TASKNAME%
-echo   时间   : 每天 %RUNTIME%
+echo   时间   : 每天 %TIMES%
 echo.
 
 if not exist "%PYTHON%" (
     echo [错误] 找不到 Python: %PYTHON%
-    echo        请用记事本修改本文件顶部的 PYTHON 变量为你的 Python 路径。
+    echo        请把本文件顶部的 PYTHON 变量改成你的 Python 完整路径。
     echo.
     pause
     exit /b 1
@@ -56,9 +57,9 @@ rem --- 用 PowerShell 注册(比 schtasks 更可靠, 且无需管理员) ---
 echo [信息] 正在注册任务...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$a = New-ScheduledTaskAction -Execute '%PYTHON%' -Argument '\"%SCRIPT%\"' -WorkingDirectory '%WORKDIR%';" ^
-  "$t = New-ScheduledTaskTrigger -Daily -At '%RUNTIME%';" ^
-  "$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30);" ^
-  "Register-ScheduledTask -TaskName '%TASKNAME%' -Action $a -Trigger $t -Settings $s -Description 'WorkBuddy 每日自动签到' -Force | Out-Null;" ^
+  "$t = ('%TIMES%' -split '\s+') | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ };" ^
+  "$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 60);" ^
+  "Register-ScheduledTask -TaskName '%TASKNAME%' -Action $a -Trigger $t -Settings $s -Description 'AI IDE 每日自动签到' -Force | Out-Null;" ^
   "if ($?) { exit 0 } else { exit 1 }"
 
 if %errorlevel% neq 0 (

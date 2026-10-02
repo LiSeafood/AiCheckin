@@ -1643,13 +1643,18 @@ def _parse_iso_utc(s: str | None) -> float:
 
 
 def _process_running(keyword: str) -> bool:
-    """按进程名关键字检查是否有进程在运行(Windows tasklist;其它平台返回 False)。"""
+    """按进程名关键字检查是否有进程在运行(Windows tasklist;其它平台返回 False)。
+
+    tasklist 输出可能是 GBK 编码(含中文进程名),必须按字节捕获后容错解码,
+    否则 text=True 的 UTF-8 解码会随机崩溃。
+    """
     try:
-        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, timeout=15).stdout
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                           capture_output=True, timeout=15)
+        out = (r.stdout or b"").decode("utf-8", "ignore").lower()
     except Exception:
         return False
-    return keyword.lower() in out.lower()
+    return keyword.lower() in out
 
 
 def _qoder_client_running() -> bool:
@@ -1930,17 +1935,21 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         return False
 
     campaigns = body.get("campaigns") or []
-    benefits = [c for c in campaigns if isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"]
-    # 每日活动对象可能延迟下发(实测整点后数分钟才出现),空列表时短暂重试
-    for attempt in range(3):
-        if benefits:
+    # 每日活动对象可能延迟下发(实测整点后 1 小时仍未出现的情况),持续重查
+    for attempt in range(max(1, int(os.environ.get("CHECKIN_QODER_EMPTY_RETRY", "10")))):
+        if any(isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"
+               for c in campaigns):
             break
         wait = 60
-        log(f"  活动列表暂无签到类活动(可能未下发),{wait}s 后重查({attempt + 1}/3)...")
+        log(f"  活动列表暂无签到类活动(可能未下发),{wait}s 后重查({attempt + 1}/10)...")
         time.sleep(wait)
         status, body, raw = _qoder_req(base, "/sash/api/v1/me/campaigns", headers)
         campaigns = (body or {}).get("campaigns") or [] if isinstance(body, dict) else []
-        benefits = [c for c in campaigns if isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"]
+    # 每日签到识别: 领取类活动 + CREDITS 权益(参考 sun-olympic/qoder-checkin,
+    # 避免误领订阅优惠等其它 CLAIM_BENEFIT 活动)
+    benefits = [c for c in campaigns
+                if isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"
+                and isinstance(c.get("benefit"), dict) and c["benefit"].get("kind") == "CREDITS"]
     claimable = [c for c in benefits if c.get("claimStatus") == "CLAIMABLE"]
     if not claimable:
         claimed_now = [c for c in benefits if c.get("claimStatus") == "CLAIMED"]
