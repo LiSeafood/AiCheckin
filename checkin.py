@@ -1547,14 +1547,14 @@ def checkin_trae() -> bool:
 # --------------------------------------------------------------------------
 # Qoder 签到(2026-10 接入,接口逆向自客户端;参考社区 qoder-checkin 项目)
 #
-# 凭据存放(与 TRAE 完全不同): 客户端数据目录 %APPDATA%\com.qodercn.app.*\
+# 凭据存放(与 TRAE 完全不同): 客户端数据目录 %APPDATA%\com.qoder*.app.*\
 #   * auth.v1.dat     = Chromium os_crypt 格式: b"v10" + nonce(12) + AES-256-GCM 密文,
 #                       明文为 JSON {token:"dt-..", refreshToken:"drt-..", expiresAt, user{...}}
 #                       密钥在 Local State 的 os_crypt.encrypted_key(DPAPI 保护,剥 5 字节前缀)
 #   * auth.machine-id = Cosy-MachineId
 # ⚠️ DPAPI 解 key 必须走 PowerShell 子进程(.NET ProtectedData) —— 本机实测
 #    python 直接调 Crypt*Data 会被 WorkBuddy 行为防护终止进程(见 README)。
-# 接口(国内版 openapi.qoder.com.cn):
+# 接口(CN 域 openapi.qoder.com.cn / 国际域 openapi.qoder.sh):
 #   GET  /sash/api/v1/me/campaigns              查活动(Authorization: Bearer dt-..)
 #   POST /sash/api/v1/me/campaigns/{cid}/claim  领取(data.status == "CLAIMED")
 #   POST /api/v1/deviceToken/refresh            续期 {"refresh_token": drt-..}
@@ -1562,15 +1562,25 @@ def checkin_trae() -> bool:
 # 活动每日 10:00 (UTC+8) 刷新,领取后 30 天有效,claim 幂等。
 # --------------------------------------------------------------------------
 
-QODER_BASE = "https://openapi.qoder.com.cn"
 QODER_UMID_REL = os.path.join("resources", "umid", "runtime-info.exe")
 
 
 def _qoder_datadirs() -> list[str]:
-    """客户端数据目录:国内版 com.qodercn.app.*。"""
+    """客户端数据目录:国际版 com.qoder.app.* / 国内版 com.qodercn.app.*。"""
     appdata = os.environ.get("APPDATA", "")
-    return sorted(glob.glob(os.path.join(appdata, "com.qodercn.app.*")),
-                  key=os.path.getmtime, reverse=True)
+    out = []
+    for pat in ("com.qoder.app.*", "com.qodercn.app.*"):
+        out += sorted(glob.glob(os.path.join(appdata, pat)),
+                      key=os.path.getmtime, reverse=True)
+    return out
+
+
+def _qoder_variant(datadir: str) -> str:
+    return "cn" if ".qodercn." in os.path.basename(datadir).lower() else "intl"
+
+
+def _qoder_base(variant: str) -> str:
+    return "https://openapi.qoder.com.cn" if variant == "cn" else "https://openapi.qoder.sh"
 
 
 _QODER_PS_UNPROTECT = r"""
@@ -1780,6 +1790,7 @@ def harvest_qoder_accounts(store: dict) -> None:
         uid = str(user.get("id") or "")
         if not uid:
             continue
+        variant = _qoder_variant(datadir)
         exp = _parse_iso_utc(sess.get("expiresAt"))
         old = (store.setdefault("qoder", {}).get(uid) or {})
         if old.get("token") and _parse_iso_utc(old.get("expires_at")) >= exp:
@@ -1801,6 +1812,8 @@ def harvest_qoder_accounts(store: dict) -> None:
             "refresh_token": rt,
             "expires_at": sess.get("expiresAt") or "",
             "refresh_expires_at": sess.get("refreshTokenExpiresAt") or "",
+            "base": _qoder_base(variant),
+            "variant": variant,
             "datadir": datadir,
             "machine_id": machine_id,
             "device": device,
@@ -1808,7 +1821,7 @@ def harvest_qoder_accounts(store: dict) -> None:
         }
         store["qoder"][uid] = entry
         changed = True
-        log(f"  [账号库] Qoder 账号 {entry['name']} 已入库/更新,token 至 {entry['expires_at']}")
+        log(f"  [账号库] Qoder 账号 {entry['name']}({variant}) 已入库/更新,token 至 {entry['expires_at']}")
     if changed:
         _save_store(store)
 
@@ -1820,7 +1833,7 @@ def _qoder_force_refresh(acc: dict) -> bool:
     if not rt:
         log(f"  [{name}] 无 refreshToken,无法续期")
         return False
-    base = QODER_BASE
+    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
     headers = _qoder_headers(acc)
     headers.pop("Authorization", None)
     status, body, raw = _qoder_req(base, "/api/v1/deviceToken/refresh", headers,
@@ -1906,7 +1919,7 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         if days <= 0:
             log("  跳过:token 已过期且续期未成功")
             return False
-    base = QODER_BASE
+    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
     headers = _qoder_headers(acc)
 
     status, body, raw = with_retry(
@@ -1922,16 +1935,6 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         return False
 
     campaigns = body.get("campaigns") or []
-    # 每日活动对象可能延迟下发(实测整点后 1 小时仍未出现的情况),持续重查
-    for attempt in range(max(1, int(os.environ.get("CHECKIN_QODER_EMPTY_RETRY", "10")))):
-        if any(isinstance(c, dict) and c.get("actionType") == "CLAIM_BENEFIT"
-               for c in campaigns):
-            break
-        wait = 60
-        log(f"  活动列表暂无签到类活动(可能未下发),{wait}s 后重查({attempt + 1}/10)...")
-        time.sleep(wait)
-        status, body, raw = _qoder_req(base, "/sash/api/v1/me/campaigns", headers)
-        campaigns = (body or {}).get("campaigns") or [] if isinstance(body, dict) else []
     # 每日签到识别: 领取类活动 + CREDITS 权益(参考 sun-olympic/qoder-checkin,
     # 避免误领订阅优惠等其它 CLAIM_BENEFIT 活动)
     benefits = [c for c in campaigns
@@ -1942,10 +1945,10 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         claimed_now = [c for c in benefits if c.get("claimStatus") == "CLAIMED"]
         if claimed_now:
             log(f"  今日已签到(本次运行前已领过,未重复领取),活动 {len(claimed_now)} 个")
-        else:
-            log(f"  今日没有可领的签到活动(列表 {len(campaigns)} 项均为非签到类)——"
-                f"可能是活动尚未下发,可稍后手动重跑 python checkin.py 再试")
-        return True
+            return True
+        log(f"  ❌ 签到失败:服务端今日未下发可领取的签到活动(列表 {len(campaigns)} 项)——"
+            f"可稍后在客户端活动页手动领取,或手动重跑本脚本再试")
+        return False
 
     got, fail = 0.0, 0
     for c in claimable:
