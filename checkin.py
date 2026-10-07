@@ -1554,7 +1554,7 @@ def checkin_trae() -> bool:
 #   * auth.machine-id = Cosy-MachineId
 # ⚠️ DPAPI 解 key 必须走 PowerShell 子进程(.NET ProtectedData) —— 本机实测
 #    python 直接调 Crypt*Data 会被 WorkBuddy 行为防护终止进程(见 README)。
-# 接口(CN 域 openapi.qoder.com.cn / 国际域 openapi.qoder.sh):
+# 接口(国内版 openapi.qoder.com.cn):
 #   GET  /sash/api/v1/me/campaigns              查活动(Authorization: Bearer dt-..)
 #   POST /sash/api/v1/me/campaigns/{cid}/claim  领取(data.status == "CLAIMED")
 #   POST /api/v1/deviceToken/refresh            续期 {"refresh_token": drt-..}
@@ -1565,22 +1565,14 @@ def checkin_trae() -> bool:
 QODER_UMID_REL = os.path.join("resources", "umid", "runtime-info.exe")
 
 
+QODER_BASE = "https://openapi.qoder.com.cn"
+
+
 def _qoder_datadirs() -> list[str]:
-    """客户端数据目录:国际版 com.qoder.app.* / 国内版 com.qodercn.app.*。"""
+    """客户端数据目录:国内版 com.qodercn.app.*。"""
     appdata = os.environ.get("APPDATA", "")
-    out = []
-    for pat in ("com.qoder.app.*", "com.qodercn.app.*"):
-        out += sorted(glob.glob(os.path.join(appdata, pat)),
-                      key=os.path.getmtime, reverse=True)
-    return out
-
-
-def _qoder_variant(datadir: str) -> str:
-    return "cn" if ".qodercn." in os.path.basename(datadir).lower() else "intl"
-
-
-def _qoder_base(variant: str) -> str:
-    return "https://openapi.qoder.com.cn" if variant == "cn" else "https://openapi.qoder.sh"
+    return sorted(glob.glob(os.path.join(appdata, "com.qodercn.app.*")),
+                  key=os.path.getmtime, reverse=True)
 
 
 _QODER_PS_UNPROTECT = r"""
@@ -1696,7 +1688,7 @@ def _qoder_device_info(exe: str | None, account: str = "", environment: int = 0)
     """runtime-info.exe 生成账号绑定的 machineToken/machineCode/machineType。
 
     stdin 需传 {"account": "<uid>"}(尾随空格),首参数为 environment
-    (国际版=3, 国内版=0);缺账号时 accountOutcome=invalid_input,
+    (国内版 environment=0);缺账号时 accountOutcome=invalid_input,
     服务端会据此过滤可领取活动(参考 qoder2api-hub issue #10)。
     结果机器级+账号级,可缓存。"""
     if not exe:
@@ -1796,7 +1788,6 @@ def harvest_qoder_accounts(store: dict) -> None:
         uid = str(user.get("id") or "")
         if not uid:
             continue
-        variant = _qoder_variant(datadir)
         exp = _parse_iso_utc(sess.get("expiresAt"))
         old = (store.setdefault("qoder", {}).get(uid) or {})
         if old.get("token") and _parse_iso_utc(old.get("expires_at")) >= exp:
@@ -1807,20 +1798,17 @@ def harvest_qoder_accounts(store: dict) -> None:
                               encoding="utf-8").read().strip()
         except Exception:
             pass
-        device = old.get("device") or {}
-        if not device.get("machineToken"):
-            if exe is None:
-                exe = _qoder_umid_exe()
-            env = 3 if _qoder_variant(datadir) == "intl" else 0
-            device = _qoder_device_info(exe, uid, env)
+        # 机器身份与账号绑定(runtime-info 需 stdin 传账号),每次运行都刷新——
+        # 服务端按此身份决定是否下发可领取活动,身份过期/不绑定会被过滤
+        if exe is None:
+            exe = _qoder_umid_exe()
+        device = _qoder_device_info(exe, uid)
         entry = {
             "name": user.get("name") or user.get("phone") or uid[:8],
             "token": token,
             "refresh_token": rt,
             "expires_at": sess.get("expiresAt") or "",
             "refresh_expires_at": sess.get("refreshTokenExpiresAt") or "",
-            "base": _qoder_base(variant),
-            "variant": variant,
             "datadir": datadir,
             "machine_id": machine_id,
             "device": device,
@@ -1828,7 +1816,7 @@ def harvest_qoder_accounts(store: dict) -> None:
         }
         store["qoder"][uid] = entry
         changed = True
-        log(f"  [账号库] Qoder 账号 {entry['name']}({variant}) 已入库/更新,token 至 {entry['expires_at']}")
+        log(f"  [账号库] Qoder 账号 {entry['name']} 已入库/更新,token 至 {entry['expires_at']}")
     if changed:
         _save_store(store)
 
@@ -1840,7 +1828,7 @@ def _qoder_force_refresh(acc: dict) -> bool:
     if not rt:
         log(f"  [{name}] 无 refreshToken,无法续期")
         return False
-    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
+    base = QODER_BASE
     headers = _qoder_headers(acc)
     headers.pop("Authorization", None)
     status, body, raw = _qoder_req(base, "/api/v1/deviceToken/refresh", headers,
@@ -1926,7 +1914,7 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         if days <= 0:
             log("  跳过:token 已过期且续期未成功")
             return False
-    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
+    base = QODER_BASE
     headers = _qoder_headers(acc)
 
     status, body, raw = with_retry(
