@@ -1692,12 +1692,18 @@ def _qoder_umid_exe() -> str | None:
     return None
 
 
-def _qoder_device_info(exe: str | None) -> dict:
-    """runtime-info.exe 生成 machineToken/machineCode/machineType(机器级,可缓存)。"""
+def _qoder_device_info(exe: str | None, account: str = "", environment: int = 0) -> dict:
+    """runtime-info.exe 生成账号绑定的 machineToken/machineCode/machineType。
+
+    stdin 需传 {"account": "<uid>"}(尾随空格),首参数为 environment
+    (国际版=3, 国内版=0);缺账号时 accountOutcome=invalid_input,
+    服务端会据此过滤可领取活动(参考 qoder2api-hub issue #10)。
+    结果机器级+账号级,可缓存。"""
     if not exe:
         return {}
     try:
-        r = subprocess.run([exe, "--account-stdin"], input=b"",
+        r = subprocess.run([exe, str(environment), "--account-stdin"],
+                           input=(json.dumps({"account": account}) + " ").encode(),
                            capture_output=True, timeout=40, cwd=os.path.dirname(exe))
         out = r.stdout.decode("utf-8", "replace").strip()
         lines = [l for l in out.splitlines() if l.strip()]
@@ -1805,7 +1811,8 @@ def harvest_qoder_accounts(store: dict) -> None:
         if not device.get("machineToken"):
             if exe is None:
                 exe = _qoder_umid_exe()
-            device = _qoder_device_info(exe)
+            env = 3 if _qoder_variant(datadir) == "intl" else 0
+            device = _qoder_device_info(exe, uid, env)
         entry = {
             "name": user.get("name") or user.get("phone") or uid[:8],
             "token": token,
