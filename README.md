@@ -103,11 +103,11 @@ WorkBuddy 5.6.2 起对本地登录态加密(AES-256-GCM),解密密钥是客户�
 **只领部分账号（按登录渠道）**：先给账号标注登录渠道（每个账号一次，脚本会按
 邮箱/手机号/名字匹配），之后就能按渠道批量停领/恢复：
 
-    python checkin.py --channel Haiyang github   # 标注 Haiyang 为 github 渠道
-    python checkin.py --disable google           # 停领所有 google 渠道账号
+    python checkin.py --channel 账号A github     # 标注 账号A 为 github 渠道
+    python checkin.py --disable google           # 停领所有 google 渠道账号(如 账号A)
     python checkin.py --enable google            # 恢复
 
-不标注渠道也可以直接用账号名或 ID 前缀：`python checkin.py --disable Foolysh`。
+不标注渠道也可以直接用账号名或 ID 前缀：`python checkin.py --disable 账号B`。
 被停领的账号标记写在账号库里（excluded 字段），随时 `--enable` 恢复。
 
 ## GitHub Actions 部署(仅 WorkBuddy)
