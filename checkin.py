@@ -458,6 +458,23 @@ def _save_store(store: dict) -> None:
     os.replace(tmp, STORE_PATH)
 
 
+def _match_account(acc: dict, key: str, needle: str) -> bool:
+    """账号匹配: 名字/渠道标签/UID/邮箱/手机号任一字段包含即命中(大小写不敏感)。"""
+    hay = " ".join(filter(None, [
+        str(acc.get("name") or ""), str(acc.get("channel") or ""),
+        key, str(acc.get("email") or ""), str(acc.get("phone") or ""),
+    ])).lower()
+    return needle.lower() in hay
+
+
+def _account_flags(acc: dict, old: dict | None) -> dict:
+    """合并用户手动标记(excluded/channel),harvest 覆盖字段时不丢失。"""
+    for flag in ("excluded", "channel"):
+        if old and old.get(flag):
+            acc[flag] = old[flag]
+    return acc
+
+
 def _store_upsert(store: dict, platform: str, key: str, entry: dict) -> bool:
     """按 key 入库;已有记录时只接受"更新签发"的登录态。
 
@@ -474,6 +491,7 @@ def _store_upsert(store: dict, platform: str, key: str, entry: dict) -> bool:
         if old.get("access_token") and new_iat_of(entry) <= int(old.get("iat") or 0):
             return False
     bucket[key] = entry
+    _account_flags(entry, old)   # 用户手动标记(excluded/channel)不被截留覆盖
     return True
 
 
@@ -1375,6 +1393,9 @@ def checkin_workbuddy() -> bool:
     log(f"  共 {len(pool)} 个账号待签")
     results = []
     for key, acc in pool.items():
+        if acc.get("excluded"):
+            log(f"  --- 账号 {acc.get('name') or key[:8]} --- 已设置为不领取,跳过")
+            continue
         token = acc.get("access_token")
         label = acc.get("name") or key[:8]
         if not token:
@@ -1528,6 +1549,9 @@ def checkin_trae() -> bool:
     log(f"  共 {len(accounts)} 个账号待签")
     results = []
     for uid, acc in sorted(accounts.items()):
+        if acc.get("excluded"):
+            log(f"  --- 账号 {acc.get('name') or uid} --- 已设置为不领取,跳过")
+            continue
         token = acc.get("access_token") or ""
         name = acc.get("name") or uid
         info = token_expiry(token)
@@ -1554,7 +1578,7 @@ def checkin_trae() -> bool:
 #   * auth.machine-id = Cosy-MachineId
 # ⚠️ DPAPI 解 key 必须走 PowerShell 子进程(.NET ProtectedData) —— 本机实测
 #    python 直接调 Crypt*Data 会被 WorkBuddy 行为防护终止进程(见 README)。
-# 接口(国内版 openapi.qoder.com.cn):
+# 接口(CN 域 openapi.qoder.com.cn / 国际域 openapi.qoder.sh):
 #   GET  /sash/api/v1/me/campaigns              查活动(Authorization: Bearer dt-..)
 #   POST /sash/api/v1/me/campaigns/{cid}/claim  领取(data.status == "CLAIMED")
 #   POST /api/v1/deviceToken/refresh            续期 {"refresh_token": drt-..}
@@ -1565,14 +1589,22 @@ def checkin_trae() -> bool:
 QODER_UMID_REL = os.path.join("resources", "umid", "runtime-info.exe")
 
 
-QODER_BASE = "https://openapi.qoder.com.cn"
-
-
 def _qoder_datadirs() -> list[str]:
-    """客户端数据目录:国内版 com.qodercn.app.*。"""
+    """客户端数据目录:国际版 com.qoder.app.* / 国内版 com.qodercn.app.*。"""
     appdata = os.environ.get("APPDATA", "")
-    return sorted(glob.glob(os.path.join(appdata, "com.qodercn.app.*")),
-                  key=os.path.getmtime, reverse=True)
+    out = []
+    for pat in ("com.qoder.app.*", "com.qodercn.app.*"):
+        out += sorted(glob.glob(os.path.join(appdata, pat)),
+                      key=os.path.getmtime, reverse=True)
+    return out
+
+
+def _qoder_variant(datadir: str) -> str:
+    return "cn" if ".qodercn." in os.path.basename(datadir).lower() else "intl"
+
+
+def _qoder_base(variant: str) -> str:
+    return "https://openapi.qoder.com.cn" if variant == "cn" else "https://openapi.qoder.sh"
 
 
 _QODER_PS_UNPROTECT = r"""
@@ -1688,7 +1720,7 @@ def _qoder_device_info(exe: str | None, account: str = "", environment: int = 0)
     """runtime-info.exe 生成账号绑定的 machineToken/machineCode/machineType。
 
     stdin 需传 {"account": "<uid>"}(尾随空格),首参数为 environment
-    (国内版 environment=0);缺账号时 accountOutcome=invalid_input,
+    (国际版=3, 国内版=0);缺账号时 accountOutcome=invalid_input,
     服务端会据此过滤可领取活动(参考 qoder2api-hub issue #10)。
     结果机器级+账号级,可缓存。"""
     if not exe:
@@ -1788,6 +1820,7 @@ def harvest_qoder_accounts(store: dict) -> None:
         uid = str(user.get("id") or "")
         if not uid:
             continue
+        variant = _qoder_variant(datadir)
         exp = _parse_iso_utc(sess.get("expiresAt"))
         old = (store.setdefault("qoder", {}).get(uid) or {})
         if old.get("token") and _parse_iso_utc(old.get("expires_at")) >= exp:
@@ -1802,18 +1835,26 @@ def harvest_qoder_accounts(store: dict) -> None:
         # 服务端按此身份决定是否下发可领取活动,身份过期/不绑定会被过滤
         if exe is None:
             exe = _qoder_umid_exe()
-        device = _qoder_device_info(exe, uid)
+        env = 3 if _qoder_variant(datadir) == "intl" else 0
+        device = _qoder_device_info(exe, uid, env)
         entry = {
             "name": user.get("name") or user.get("phone") or uid[:8],
+            "email": user.get("email") or "",
+            "phone": user.get("phone") or "",
             "token": token,
             "refresh_token": rt,
             "expires_at": sess.get("expiresAt") or "",
             "refresh_expires_at": sess.get("refreshTokenExpiresAt") or "",
+            "base": _qoder_base(variant),
+            "variant": variant,
             "datadir": datadir,
             "machine_id": machine_id,
             "device": device,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        _account_flags(entry, old)
+        if excluded:
+            entry["excluded"] = True   # 用户停领的账号,截留时保留标记
         store["qoder"][uid] = entry
         changed = True
         log(f"  [账号库] Qoder 账号 {entry['name']} 已入库/更新,token 至 {entry['expires_at']}")
@@ -1828,7 +1869,7 @@ def _qoder_force_refresh(acc: dict) -> bool:
     if not rt:
         log(f"  [{name}] 无 refreshToken,无法续期")
         return False
-    base = QODER_BASE
+    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
     headers = _qoder_headers(acc)
     headers.pop("Authorization", None)
     status, body, raw = _qoder_req(base, "/api/v1/deviceToken/refresh", headers,
@@ -1914,7 +1955,7 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         if days <= 0:
             log("  跳过:token 已过期且续期未成功")
             return False
-    base = QODER_BASE
+    base = acc.get("base") or _qoder_base(acc.get("variant") or "cn")
     headers = _qoder_headers(acc)
 
     status, body, raw = with_retry(
@@ -1979,6 +2020,9 @@ def checkin_qoder() -> bool:
     log(f"  共 {len(accounts)} 个账号待签")
     results = []
     for uid, acc in sorted(accounts.items()):
+        if acc.get("excluded"):
+            log(f"  --- 账号 {acc.get('name') or uid[:8]} --- 已设置为不领取,跳过")
+            continue
         acc["_uid"] = uid
         name = acc.get("name") or uid[:8]
         try:
@@ -2029,8 +2073,83 @@ def main(with_trae: bool = True, with_qoder: bool = True) -> int:
     return 0 if all(ok for _, ok in results) else 1
 
 
+def _cli_toggle(argv: list[str]) -> int:
+    """--disable/--enable <账号名/ID/登录渠道>: 设置/解除账号的停领标记。
+
+    匹配字段: 账号名、渠道标签(见 --channel)、UID、邮箱、手机号,任一命中即生效,
+    可命中多个账号(例如 --disable google 会停领所有标注为 google 的账号)。
+    """
+    action = None
+    name = None
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--disable", "--enable"):
+            action = argv[i][2:]
+            if i + 1 < len(argv):
+                name = argv[i + 1]
+                i += 1
+        i += 1
+    if not action or not name:
+        print("用法: python checkin.py --disable <账号名/ID/渠道>  /  --enable <账号名/ID/渠道>")
+        return 2
+    store = _load_store()
+    hits = []
+    for plat, bucket in store.items():
+        if not isinstance(bucket, dict):
+            continue
+        for key, acc in bucket.items():
+            if not isinstance(acc, dict):
+                continue
+            if _match_account(acc, key, name):
+                acc["excluded"] = action == "disable"
+                hits.append((plat, key, acc.get("name") or key[:8]))
+    if not hits:
+        print(f"未找到匹配 '{name}' 的账号(可用 --channel 先给账号标注登录渠道)")
+        return 2
+    _save_store(store)
+    for plat, key, nm in hits:
+        print(f"[{plat}] {nm or key[:8]} -> {'已停领(跳过)' if action == 'disable' else '恢复领取'}")
+    return 0
+
+
+def _cli_channel(argv: list[str]) -> int:
+    """--channel <账号名/ID/邮箱/手机号> <渠道>: 给账号标注登录渠道(如 github/google)。"""
+    rest = [a for a in argv if not a.startswith("--")]
+    if len(rest) < 2:
+        print("用法: python checkin.py --channel <账号名/ID/邮箱/手机号> <渠道名>")
+        return 2
+    needle, channel = rest[0], rest[1].lower()
+    store = _load_store()
+    hits = []
+    for plat, bucket in store.items():
+        if not isinstance(bucket, dict):
+            continue
+        for key, acc in bucket.items():
+            if not isinstance(acc, dict):
+                continue
+            hay = " ".join(filter(None, [
+                str(acc.get("name") or ""), key,
+                str(acc.get("email") or ""), str(acc.get("phone") or ""),
+            ])).lower()
+            if needle.lower() in hay:
+                acc["channel"] = channel
+                hits.append((plat, key, acc.get("name") or key[:8]))
+    if not hits:
+        print(f"未找到匹配 '{needle}' 的账号")
+        return 2
+    _save_store(store)
+    for plat, key, nm in hits:
+        print(f"[{plat}] {nm or key[:8]} -> 渠道已标注为 {channel}")
+    return 0
+
+
 if __name__ == "__main__":
-    args = set(sys.argv[1:])
+    argv = sys.argv[1:]
+    if "--disable" in argv or "--enable" in argv:
+        sys.exit(_cli_toggle(argv))
+    if "--channel" in argv:
+        sys.exit(_cli_channel(argv))
+    args = set(argv)
     with_trae = "--no-trae" not in args
     with_qoder = "--no-qoder" not in args
 
