@@ -1991,9 +1991,12 @@ def _checkin_qoder_token(acc: dict, name: str) -> bool:
         cid = str(c.get("campaignId") or "")
         s2, d2, r2 = _qoder_req(base, f"/sash/api/v1/me/campaigns/{cid}/claim", headers, {})
         dd = d2.get("data") if isinstance(d2, dict) and isinstance(d2.get("data"), dict) else d2
-        if s2 == 200 and isinstance(dd, dict) and dd.get("status") == "CLAIMED":
+        replayed = isinstance(dd, dict) and dd.get("replayed") is True
+        if s2 == 200 and isinstance(dd, dict) and (dd.get("status") == "CLAIMED" or replayed):
             amt = (dd.get("benefit") or {}).get("amount") or (c.get("benefit") or {}).get("amount") or 0
             got += float(amt) if isinstance(amt, (int, float)) else 0
+            if replayed:
+                log(f"  {cid}: 服务端幂等回放(本轮已领过),不重复计数")
         else:
             fail += 1
             log(f"  领取失败: {cid} HTTP {s2} {r2[:120]}")
